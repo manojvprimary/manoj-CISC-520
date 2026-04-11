@@ -1,0 +1,8 @@
+flask
+yfinance
+pandas
+kagglehub
+google-cloud-storage
+gunicorn
+requests
+flask-cors
