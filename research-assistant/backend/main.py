@@ -1,100 +1,95 @@
-from flask import Flask, request, jsonify
-import requests
 import os
+import uuid
+import traceback
+
+import pandas as pd
+from flask import Flask, request, jsonify, Response
 from flask_cors import CORS
 
+from agent import run_agent_loop, stream_agent_loop, sse
+from tools import clean_dataframe
+
 app = Flask(__name__)
+CORS(app)
 
-CORS(app, resources={
-    r"/chat": {
-        "origins": ["https://research-assistant-app-636745240622.us-central1.run.app"]
-    }
-})
 
-# Set this in Cloud Run env vars
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
-
-LLM_URL = "https://openrouter.ai/api/v1/chat/completions"
-
-# -----------------------------
-# Health Check
-# -----------------------------
 @app.route("/")
 def health():
     return "OK"
 
 
-# -----------------------------
-# Chat Endpoint
-# -----------------------------
+@app.route("/stream", methods=["POST"])
+def stream_chat():
+    data = request.get_json()
+    user_message = data.get("message", "")
+    history = data.get("history", [])
+    csv_context = data.get("csv_context")
+
+    def generate():
+        try:
+            yield from stream_agent_loop(user_message, history, csv_context=csv_context)
+        except Exception as e:
+            traceback.print_exc()
+            yield sse({"type": "error", "content": str(e)})
+            yield sse({"type": "done"})
+
+    return Response(
+        generate(),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
+
+
 @app.route("/chat", methods=["POST"])
 def chat():
     data = request.get_json()
-
     user_message = data.get("message", "")
     history = data.get("history", [])
+    csv_context = data.get("csv_context")
 
     try:
-        # -----------------------------
-        # System Prompt
-        # -----------------------------
-        system_prompt = """
-            You are an AI assistant being developed for an Animal Rescue Research platform.
+        result = run_agent_loop(user_message, history, csv_context=csv_context)
+        return jsonify(result)
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
-            If the user asks about:
-                - animal rescue
-                - stray animals
-                - trends
-                - shelters
-                - analysis
-                - data insights
 
-            Respond with:
-                "I'm currently being built. Soon I will be able to analyze animal rescue data, generate charts, and provide insights such as trends, comparisons, and statistics."
+@app.route("/upload", methods=["POST"])
+def upload():
+    if "file" not in request.files:
+        return jsonify({"error": "No file provided"}), 400
 
-            For general questions (jokes, facts, etc), respond normally.
-        """
+    f = request.files["file"]
+    if not f.filename.endswith(".csv"):
+        return jsonify({"error": "Only CSV files are supported"}), 400
 
-        # -----------------------------
-        # Build Messages
-        # -----------------------------
-        messages = [{"role": "system", "content": system_prompt}]
+    try:
+        df = pd.read_csv(f)
+        df = clean_dataframe(df)
+        rows, cols = df.shape
+        preview = df.head(5).values.tolist()
+        columns = list(df.columns)
 
-        # Add history if provided
-        for msg in history:
-            messages.append(msg)
+        upload_dir = "/tmp/csv_uploads"
+        os.makedirs(upload_dir, exist_ok=True)
+        csv_path = os.path.join(upload_dir, f"{uuid.uuid4().hex}.csv")
+        df.to_csv(csv_path, index=False)
 
-        # Add current user message
-        messages.append({"role": "user", "content": user_message})
-
-        # -----------------------------
-        # Call LLM
-        # -----------------------------
-        response = requests.post(
-            LLM_URL,
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json"
-            },
-            json={
-                "model": "mistralai/mixtral-8x7b-instruct",  # free model
-                "messages": messages,
-                "temperature": 0.7
+        return jsonify(
+            {
+                "rows": rows,
+                "columns": columns,
+                "preview": preview,
+                "csv_path": csv_path,
             }
         )
-
-        result = response.json()
-
-        assistant_reply = result["choices"][0]["message"]["content"]
-
-        return jsonify({
-            "response": assistant_reply
-        })
-
     except Exception as e:
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

@@ -1,8 +1,11 @@
 flask
-yfinance
-pandas
-kagglehub
-google-cloud-storage
 gunicorn
-requests
 flask-cors
+pandas
+numpy
+matplotlib
+seaborn
+scipy
+kagglehub
+anthropic
+requests
