@@ -4,6 +4,8 @@ An AI-powered research assistant for analyzing animal shelter and rescue data. B
 
 CISC 520 — Data Engineering and Mining
 
+Research Assitant: https://research-assistant-app-636745240622.us-central1.run.app/
+
 ## Architecture
 
 ```
